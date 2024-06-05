@@ -33,17 +33,17 @@ async fn main() {
     create_tables(db_pool.clone(), "schema.sql").await.unwrap();
 
     // Example usage
-    CreateStream(db_pool.clone(), "stream1".to_string())
+    create_stream(db_pool.clone(), "stream1".to_string())
         .await
         .unwrap();
-    let _index = AppendDataToStream(
+    let _index = append_data_to_stream(
         db_pool.clone(),
         "stream1".to_string(),
         Bytes::from("new binary data"),
     )
     .await
     .unwrap();
-    let data = ReadDataFromStream(db_pool.clone(), "stream1".to_string(), 0, 14)
+    let data = read_data_from_stream(db_pool.clone(), "stream1".to_string(), 0, 14)
         .await
         .unwrap();
     println!("{:?}", data);
@@ -79,7 +79,7 @@ async fn create_tables(db_pool: DbPool, file_path: &str) -> Result<(), Error> {
 ///
 /// # Errors
 /// Returns an error if a stream with the same id already exists
-async fn CreateStream(db_pool: DbPool, id: String) -> Result<(), Error> {
+async fn create_stream(db_pool: DbPool, id: String) -> Result<(), Error> {
     let mut conn = db_pool.lock().await.acquire().await?;
     sqlx::query("INSERT INTO Streams (stream_id, total_length) VALUES (?, 0)")
         .bind(&id)
@@ -100,7 +100,7 @@ async fn CreateStream(db_pool: DbPool, id: String) -> Result<(), Error> {
 ///
 /// # Errors
 /// Returns an error if the stream does not exist
-async fn AppendDataToStream(
+async fn append_data_to_stream(
     db_pool: DbPool,
     stream_id: String,
     binary_data: Bytes,
@@ -150,7 +150,7 @@ async fn AppendDataToStream(
 ///
 /// # Errors
 /// Returns an error if the requested stream does not exist, the requested bytes do not exist, or the requested bytes were already read before
-async fn ReadDataFromStream(
+async fn read_data_from_stream(
     db_pool: DbPool,
     stream_id: String,
     start_idx: i64,
@@ -223,10 +223,10 @@ mod tests {
     #[tokio::test]
     async fn test_create_stream() {
         let db_pool = setup_db().await;
-        assert!(CreateStream(db_pool.clone(), "test_stream".to_string())
+        assert!(create_stream(db_pool.clone(), "test_stream".to_string())
             .await
             .is_ok());
-        assert!(CreateStream(db_pool.clone(), "test_stream".to_string())
+        assert!(create_stream(db_pool.clone(), "test_stream".to_string())
             .await
             .is_err());
     }
@@ -234,10 +234,10 @@ mod tests {
     #[tokio::test]
     async fn test_append_data_to_stream() {
         let db_pool = setup_db().await;
-        CreateStream(db_pool.clone(), "test_stream".to_string())
+        create_stream(db_pool.clone(), "test_stream".to_string())
             .await
             .unwrap();
-        let index = AppendDataToStream(
+        let index = append_data_to_stream(
             db_pool.clone(),
             "test_stream".to_string(),
             Bytes::from("binary data"),
@@ -250,24 +250,24 @@ mod tests {
     #[tokio::test]
     async fn test_read_data_from_stream() {
         let db_pool = setup_db().await;
-        CreateStream(db_pool.clone(), "test_stream".to_string())
+        create_stream(db_pool.clone(), "test_stream".to_string())
             .await
             .unwrap();
-        AppendDataToStream(
+        append_data_to_stream(
             db_pool.clone(),
             "test_stream".to_string(),
             Bytes::from("binary data"),
         )
         .await
         .unwrap();
-        let data = ReadDataFromStream(db_pool.clone(), "test_stream".to_string(), 0, 11)
+        let data = read_data_from_stream(db_pool.clone(), "test_stream".to_string(), 0, 11)
             .await
             .unwrap();
         assert_eq!(data, Bytes::from("binary data"));
 
         // Attempt to read the same range again should fail
         assert!(
-            ReadDataFromStream(db_pool.clone(), "test_stream".to_string(), 0, 11)
+            read_data_from_stream(db_pool.clone(), "test_stream".to_string(), 0, 11)
                 .await
                 .is_err()
         );
