@@ -100,8 +100,8 @@ async fn create_tables(db_pool: DbPool, file_path: &str) -> Result<(), WoroError
     file.read_to_string(&mut sql).map_err(SqlxError::Io)?;
 
     // Execute the SQL
+    // This is only setup code for testing purposes, so we're not too clever about error handling.
     sqlx::query(&sql).execute(&mut *conn).await?;
-
     Ok(())
 }
 
@@ -115,11 +115,21 @@ async fn create_tables(db_pool: DbPool, file_path: &str) -> Result<(), WoroError
 /// Returns an error if a stream with the same id already exists
 async fn create_stream(db_pool: DbPool, id: String) -> Result<(), WoroError> {
     let mut conn = db_pool.lock().await.acquire().await?;
-    sqlx::query("INSERT INTO Streams (stream_id, total_length) VALUES (?, 0)")
+    match sqlx::query("INSERT INTO Streams (stream_id, total_length) VALUES (?, 0)")
         .bind(&id)
         .execute(&mut *conn)
-        .await?;
-    Ok(())
+        .await
+    {
+        Ok(_) => Ok(()),
+        // if stream PK collides, it must be for this error.
+        // TODO: is there a better way than just looking at the error message?
+        Err(SqlxError::Database(db_err))
+            if db_err.message().contains("UNIQUE constraint failed") =>
+        {
+            Err(WoroError::StreamAlreadyExists)
+        }
+        Err(e) => Err(WoroError::SqlxError(e)),
+    }
 }
 
 /// Appends binary data to the specified stream
@@ -148,7 +158,14 @@ async fn append_data_to_stream(
     let result: (i64,) = sqlx::query_as("SELECT total_length FROM Streams WHERE stream_id = ?")
         .bind(&stream_id)
         .fetch_one(&mut *conn)
-        .await?;
+        .await
+        .map_err(|e| {
+            if let SqlxError::RowNotFound = e {
+                WoroError::StreamNotFound
+            } else {
+                WoroError::SqlxError(e)
+            }
+        })?;
 
     let total_length = result.0;
     let new_length = total_length + binary_data.len() as i64;
@@ -210,7 +227,15 @@ LIMIT 1
     .bind(start_idx + length)
     .bind(start_idx)
     .fetch_one(&mut *conn)
-    .await?;
+    .await
+    // TODO: not sure that we CAN get a rownotfound on here, but may as well double-check
+    .map_err(|e| {
+        if let SqlxError::RowNotFound = e {
+            WoroError::BytesAlreadyRead
+        } else {
+            WoroError::SqlxError(e)
+        }
+    })?;
 
     if count.0 > 0 {
         return Err(WoroError::BytesAlreadyRead);
@@ -231,7 +256,18 @@ ORDER BY start_offset
     .bind(&stream_id)
     .bind(start_idx + length)
     .fetch_all(&mut *conn)
-    .await?;
+    .await
+    .map_err(|e| {
+        if let SqlxError::RowNotFound = e {
+            WoroError::BytesNotFound
+        } else {
+            WoroError::SqlxError(e)
+        }
+    })?;
+
+    if chunks.is_empty() {
+        return Err(WoroError::BytesNotFound);
+    }
 
     // We merge the chunks together into the requested range from the stream
     // TODO: this could be done 0-copy with a new struct that stores only the vectors returned from
@@ -280,9 +316,10 @@ mod tests {
         assert!(create_stream(db_pool.clone(), "test_stream".to_string())
             .await
             .is_ok());
-        assert!(create_stream(db_pool.clone(), "test_stream".to_string())
-            .await
-            .is_err());
+        assert!(matches!(
+            create_stream(db_pool.clone(), "test_stream".to_string()).await,
+            Err(WoroError::StreamAlreadyExists)
+        ));
     }
 
     #[tokio::test]
@@ -320,10 +357,9 @@ mod tests {
         assert_eq!(data, Bytes::from("binary data"));
 
         // Attempt to read the same range again should fail
-        assert!(
-            read_data_from_stream(db_pool.clone(), "test_stream".to_string(), 0, 11)
-                .await
-                .is_err()
-        );
+        assert!(matches!(
+            read_data_from_stream(db_pool.clone(), "test_stream".to_string(), 0, 11).await,
+            Err(WoroError::BytesAlreadyRead)
+        ));
     }
 }
