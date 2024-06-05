@@ -273,18 +273,33 @@ ORDER BY start_offset
     // TODO: this could be done 0-copy with a new struct that stores only the vectors returned from
     // sqlx, then defines Serialize on them so they can be read out into a return array over the
     // wire.
-    let mut data = Vec::new();
+    // We know the resulting stream size ahead of time, so prealloc for efficiency.
+    let mut data = Vec::with_capacity(length as usize);
+
+    let mut read_bytes = 0;
+
+    println!("{:?}", chunks);
     for (chunk_start, chunk_data) in chunks {
-        // TODO: u64 indexes
         let chunk_end = chunk_start + chunk_data.len() as i64;
-        if chunk_start < start_idx && chunk_end > start_idx {
-            data.extend_from_slice(
-                &chunk_data[(start_idx - chunk_start) as usize
-                    ..(start_idx + length - chunk_start) as usize],
-            );
-        } else if start_idx <= chunk_start && start_idx + length > chunk_start {
-            data.extend_from_slice(&chunk_data[..(start_idx + length - chunk_start) as usize]);
+
+        if chunk_start <= start_idx && chunk_end > start_idx {
+            let offset = (start_idx - chunk_start) as usize;
+            let end_offset = (start_idx + length - chunk_start).min(chunk_data.len() as i64) as usize;
+            data.extend_from_slice(&chunk_data[offset..end_offset]);
+            read_bytes += end_offset - offset;
+        } else if chunk_start > start_idx && chunk_start < start_idx + length {
+            let end_offset = (start_idx + length - chunk_start).min(chunk_data.len() as i64) as usize;
+            data.extend_from_slice(&chunk_data[..end_offset]);
+            read_bytes += end_offset;
         }
+
+        if read_bytes >= length as usize {
+            break;
+        }
+    }
+
+    if data.len() < length as usize {
+        return Err(WoroError::BytesNotFound);
     }
 
     // Mark the range as read
@@ -294,6 +309,11 @@ ORDER BY start_offset
         .bind(start_idx + length)
         .execute(&mut *conn)
         .await?;
+
+    // TODO: we could delete the data right away once it's been read. This could happen here, or in
+    // a background job to reduce resource contention. Go through the readmarks and clear out the
+    // chunks that have something read from them, and replace with chunks starting and ending
+    // outside that range.
 
     Ok(Bytes::from(data))
 }
@@ -331,11 +351,20 @@ mod tests {
         let index = append_data_to_stream(
             db_pool.clone(),
             "test_stream".to_string(),
-            Bytes::from("binary data"),
+            Bytes::from("abcdefghijkl"),
         )
         .await
         .unwrap();
         assert_eq!(index, 0);
+        // Finish our alphabet
+        let index = append_data_to_stream(
+            db_pool.clone(),
+            "test_stream".to_string(),
+            Bytes::from("mnopqrstuvwxyz"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(index, 12);
     }
 
     #[tokio::test]
@@ -347,10 +376,19 @@ mod tests {
         append_data_to_stream(
             db_pool.clone(),
             "test_stream".to_string(),
-            Bytes::from("binary data"),
+            Bytes::from("bin"),
         )
         .await
         .unwrap();
+
+        append_data_to_stream(
+            db_pool.clone(),
+            "test_stream".to_string(),
+            Bytes::from("ary data"),
+        )
+        .await
+        .unwrap();
+
         let data = read_data_from_stream(db_pool.clone(), "test_stream".to_string(), 0, 11)
             .await
             .unwrap();
@@ -359,6 +397,12 @@ mod tests {
         // Attempt to read the same range again should fail
         assert!(matches!(
             read_data_from_stream(db_pool.clone(), "test_stream".to_string(), 0, 11).await,
+            Err(WoroError::BytesAlreadyRead)
+        ));
+
+        // Attempt to read a byte inside the range should fail too.
+        assert!(matches!(
+            read_data_from_stream(db_pool.clone(), "test_stream".to_string(), 9, 2).await,
             Err(WoroError::BytesAlreadyRead)
         ));
     }
