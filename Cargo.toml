@@ -1,0 +1,9 @@
+[package]
+name = "worostream"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bytes = "1.6.0"
+sqlx = { version = "0.7.4", features = ["sqlite", "chrono"] }
+tokio = { version = "1.38.0", features = ["full"] }
