@@ -61,9 +61,9 @@ async fn create_tables(db_pool: DbPool, file_path: &str) -> Result<(), Error> {
     let mut conn = db_pool.lock().await.acquire().await?;
 
     // Read the SQL file
-    let mut file = File::open(file_path).map_err(|e| Error::Io(e))?;
+    let mut file = File::open(file_path).map_err(Error::Io)?;
     let mut sql = String::new();
-    file.read_to_string(&mut sql).map_err(|e| Error::Io(e))?;
+    file.read_to_string(&mut sql).map_err(Error::Io)?;
 
     // Execute the SQL
     sqlx::query(&sql).execute(&mut *conn).await?;
