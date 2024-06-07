@@ -18,11 +18,6 @@ type DbPool = Arc<Mutex<SqlitePool>>;
  * https://crates.io/crates/stream-download has some nice existing ways to implement these traits.
  * This could be modified so it never returns pure binary data, rather a true stream. Then we
  * apply traits to the chunks returned by sqlite so they are read in-place with no copy.
- * There are some easy low-hanging fruit functions not in the original spec:
- *  - flush the stream
- *  - flush all chunks (and readmarks) from before a certain point (eg everything before last read)
- * Consider making stream_id into a Uuid or something with existing traits and better defined
- * structure around it. This will improve serialization and distributed implementations.
  */
 
 #[derive(Error, Debug)]
@@ -64,7 +59,7 @@ async fn main() {
     let _index = append_data_to_stream(
         db_pool.clone(),
         test_stream.to_string(),
-        Bytes::from("abcdefghijk"),
+        Bytes::from("abcde"),
     )
     .await
     .unwrap();
@@ -72,14 +67,20 @@ async fn main() {
     let data = read_data_from_stream(db_pool.clone(), test_stream.to_string(), 0, 3)
         .await
         .unwrap();
-
     println!("{:?}", data);
 
+    let _index = append_data_to_stream(
+        db_pool.clone(),
+        test_stream.to_string(),
+        Bytes::from("fghijk"),
+    )
+    .await
+    .unwrap();
+
     // Try reading some more bytes off the same string
-    let data = read_data_from_stream(db_pool.clone(), test_stream.to_string(), 3, 6)
+    let data = read_data_from_stream(db_pool.clone(), test_stream.to_string(), 3, 7)
         .await
         .unwrap();
-
     println!("{:?}", data);
 }
 
@@ -278,7 +279,6 @@ ORDER BY start_offset
 
     let mut read_bytes = 0;
 
-    println!("{:?}", chunks);
     for (chunk_start, chunk_data) in chunks {
         let chunk_end = chunk_start + chunk_data.len() as i64;
 
@@ -310,10 +310,10 @@ ORDER BY start_offset
         .execute(&mut *conn)
         .await?;
 
-    // TODO: we could delete the data right away once it's been read. This could happen here, or in
-    // a background job to reduce resource contention. Go through the readmarks and clear out the
-    // chunks that have something read from them, and replace with chunks starting and ending
-    // outside that range.
+    // TODO: we COULD delete the data right away once it's been read here. But it may make more
+    // sense to batch all the readmarks together and delete from the table on a background thread.
+    // This gets the results to the caller back ASAP, and could reduce the number of deletes if
+    // you have many contiguous ReadMarks on the same stream that could be DELETEd in one call.
 
     Ok(Bytes::from(data))
 }
