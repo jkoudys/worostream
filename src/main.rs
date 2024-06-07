@@ -65,10 +65,10 @@ async fn main() {
     .unwrap();
 
     let data = read_data_from_stream(db_pool.clone(), test_stream.to_string(), 0, 3)
-        .await
-        .unwrap();
+        .await;
     println!("{:?}", data);
 
+    // Add a little more data
     let _index = append_data_to_stream(
         db_pool.clone(),
         test_stream.to_string(),
@@ -77,10 +77,15 @@ async fn main() {
     .await
     .unwrap();
 
-    // Try reading some more bytes off the same string
-    let data = read_data_from_stream(db_pool.clone(), test_stream.to_string(), 3, 7)
-        .await
-        .unwrap();
+    // Try reading some more bytes off the same string, from both the first and last append
+    let data = read_data_from_stream(db_pool.clone(), test_stream.to_string(), 3, 2)
+        .await;
+    println!("{:?}", data);
+
+    // Read some data that includes a byte we've already read.
+    // Should fail.
+    let data = read_data_from_stream(db_pool.clone(), test_stream.to_string(), 4, 2)
+        .await;
     println!("{:?}", data);
 }
 
