@@ -248,17 +248,20 @@ LIMIT 1
     }
 
     // Pull chunk as byte data
-    let chunks: Vec<(i64, Vec<u8>)> = sqlx::query_as(
+    // We'll substr on this select to only read the data from disk we actually need.
+    // FIXME: other DBMSes may not start indexing substr from 1. Double-check
+    let chunks: Vec<(Vec<u8>,)> = sqlx::query_as(
         r#"
 SELECT
-    start_offset,
-    data
+    SUBSTR(data, MAX(? - start_offset + 1, 1), ? - start_offset)
 FROM Chunks
 WHERE stream_id = ?
     AND start_offset < ?
 ORDER BY start_offset
 "#,
     )
+    .bind(start_idx)
+    .bind(start_idx + length)
     .bind(&stream_id)
     .bind(start_idx + length)
     .fetch_all(&mut *conn)
@@ -282,25 +285,8 @@ ORDER BY start_offset
     // We know the resulting stream size ahead of time, so prealloc for efficiency.
     let mut data = Vec::with_capacity(length as usize);
 
-    let mut read_bytes = 0;
-
-    for (chunk_start, chunk_data) in chunks {
-        let chunk_end = chunk_start + chunk_data.len() as i64;
-
-        if chunk_start <= start_idx && chunk_end > start_idx {
-            let offset = (start_idx - chunk_start) as usize;
-            let end_offset = (start_idx + length - chunk_start).min(chunk_data.len() as i64) as usize;
-            data.extend_from_slice(&chunk_data[offset..end_offset]);
-            read_bytes += end_offset - offset;
-        } else if chunk_start > start_idx && chunk_start < start_idx + length {
-            let end_offset = (start_idx + length - chunk_start).min(chunk_data.len() as i64) as usize;
-            data.extend_from_slice(&chunk_data[..end_offset]);
-            read_bytes += end_offset;
-        }
-
-        if read_bytes >= length as usize {
-            break;
-        }
+    for (chunk_data,) in chunks {
+        data.extend_from_slice(&chunk_data);
     }
 
     if data.len() < length as usize {
