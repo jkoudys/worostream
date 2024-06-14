@@ -36,6 +36,9 @@ pub enum WoroError {
 
     #[error("SQL error: {0}")]
     SqlxError(#[from] SqlxError),
+
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
 }
 
 #[tokio::main]
@@ -101,9 +104,9 @@ async fn create_tables(db_pool: DbPool, file_path: &str) -> Result<(), WoroError
     let mut conn = db_pool.lock().await.acquire().await?;
 
     // Read the SQL file
-    let mut file = File::open(file_path).map_err(SqlxError::Io)?;
+    let mut file = File::open(file_path)?;
     let mut sql = String::new();
-    file.read_to_string(&mut sql).map_err(SqlxError::Io)?;
+    file.read_to_string(&mut sql)?;
 
     // Execute the SQL
     // This is only setup code for testing purposes, so we're not too clever about error handling.
@@ -166,10 +169,9 @@ async fn append_data_to_stream(
         .fetch_one(&mut *conn)
         .await
         .map_err(|e| {
-            if let SqlxError::RowNotFound = e {
-                WoroError::StreamNotFound
-            } else {
-                WoroError::SqlxError(e)
+            match e {
+                SqlxError::RowNotFound => WoroError::StreamNotFound,
+                _ => WoroError::SqlxError(e),
             }
         })?;
 
@@ -308,6 +310,46 @@ ORDER BY start_offset
 
     Ok(Bytes::from(data))
 }
+
+/// Empties out the stream. Note that the length of the stream doesn't change, we're
+/// simply marking all the existing data read.
+///
+/// # Arguments
+/// * `db_pool` - Database connection pool
+/// * `stream_id` - The unique string identifier of the Stream
+///
+/// # Returns
+/// ()
+///
+/// # Errors
+/// Returns an error if the requested stream does not exist.
+/// No error returned even if stream is empty and nothing gets flushed.
+async fn flush_data_from_stream(
+    db_pool: DbPool,
+    stream_id: String,
+) -> Result<(), WoroError> {
+    let mut conn = db_pool.lock().await.acquire().await?;
+
+    // Mark the range as read
+    sqlx::query(r#"
+INSERT INTO ReadMarks rm (stream_id, start_offset, end_offset)
+SELECT
+    s.stream_id,
+    0 as start_offset,
+    s.total_length AS end_offset,
+FROM
+    Streams s
+WHERE
+    s.stream_id = ?"#,
+        .bind(&stream_id)
+        .execute(&mut *conn)
+        .await?;
+
+    // TODO: build the batch deleter that'll consolidate all already-read ranges and delete
+
+    Ok(())
+}
+
 
 #[cfg(test)]
 mod tests {
